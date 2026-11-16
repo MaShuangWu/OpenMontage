@@ -1,0 +1,61 @@
+# Kawaii app promo registry (docs/kawaii_ai_video_pipeline_prd.md).
+#
+# approved_claims is the ONLY source of product claims the LLM may use in hooks,
+# captions and descriptions. Keep it factual; no statistics unless you can cite them.
+# made_for_kids sets YouTube's COPPA flag. Promos are written for parents, so the
+# default is false; set true for any template whose video is mainly a kids' episode.
+
+godot: /Applications/Godot.app/Contents/MacOS/Godot
+games_dir: /Users/macos/Documents/projects/daian/games
+fps: 30
+size: [1080, 1920]
+trim_start: 0.5            # PRD FR-G3: drop the first half second (scene load)
+
+apps:
+  stories:
+    display_name: Kawaii Stories
+    repo: kawaii-stories
+    status: ready
+    template: story_cliffhanger
+    made_for_kids: false
+    audience: parents of children aged 4-10
+    stores: [App Store, Google Play]
+    store_urls: {}           # add App Store / Google Play links when live
+    cta: "Coming soon to the App Store & Google Play"
+    end_card: design/promo/end_card.png   # 1080x1920 Stitch design in the app repo; text card if missing
+    capture:
+      scene: tests/promo/promo.tscn
+      args: [--fresh, "--lang={ui}", "--target={target}", "--story={story}", --autoread,
+             --hold-choice, --no-curl, "--promo-hold-choice={hold}"]
+      defaults: {ui: en, target: zh, story: ch01_morning_walk, hold: 4}
+      max_seconds: 180
+    language_names: {zh: Chinese, en: English, ja: Japanese}
+    approved_claims:
+      - "Kids learn {language} through short illustrated stories"
+      - "Every line is read aloud, with a translation underneath"
+      - "Kids can tap any word to hear it"
+      - "Kids choose what happens next, and stories have different endings"
+      - "Stories are available in Chinese, English and Japanese"
+      - "Works offline"
+    theme:                   # Remotion themeConfig for hook / end cards (cozy clay palette)
+      backgroundColor: "#FEF8F1"
+      surfaceColor: "#FFFFFF"
+      textColor: "#3B2F2F"
+      mutedTextColor: "#7A6A64"
+      primaryColor: "#5FAE8C"
+      accentColor: "#F08A7E"
+      captionHighlightColor: "#F08A7E"
+      captionBackgroundColor: "rgba(255, 255, 255, 0.88)"
+    fallback_copy:           # used when no LLM provider is reachable
+      hook: "Bedtime stories that teach your child {language}."
+      hook_overlay: "Stories that teach {language}"
+      outro: "Where will {hero} go next? Find out in Kawaii Stories, coming soon."
+
+  # Not yet implemented: PromoBot + template still to build (PRD section 4).
+  math:   {display_name: Kawaii Math,   repo: kawaii-math,  status: todo, template: timed_challenge}
+  code:   {display_name: Kawaii Code,   repo: kawaii-code,  status: todo, template: logic_execution}
+  iq:     {display_name: Kawaii IQ,     repo: kawaii-iq,    status: todo, template: brain_teaser}
+  lab:    {display_name: Kawaii Lab,    repo: kawaii-lab,   status: todo, template: experiment_wow}
+  draw:   {display_name: Kawaii Draw,   repo: kawaii-draw,  status: todo, template: timelapse_reveal}
+  keys:   {display_name: Kawaii Keys,   repo: kawaii-keys,  status: todo, template: musical_showcase}
+  frets:  {display_name: Kawaii Frets,  repo: kawaii-frets, status: todo, template: musical_showcase}

@@ -56,6 +56,31 @@ def _save(path: Path, data: Any) -> None:
     path.write_text(json.dumps(data, indent=2, default=str), encoding="utf-8")
 
 
+def publish_all(db: RunLog, run_id: int, platforms: list[str], video: Path, md: dict, aspect: str,
+                seconds: float, artifacts: Path) -> list[PublishResult]:
+    """Publish to each platform; one platform failing never stops the others."""
+    posts: list[PublishResult] = []
+    for platform in platforms:
+        log.info("Publishing to %s ...", platform)
+        try:
+            pr = get_publisher(platform)(video, md, aspect, seconds)
+        except Exception as exc:
+            pr = PublishResult(platform, "failed", error=str(exc))
+        posts.append(pr)
+        db.post(run_id, platform, pr.status, pr.post_id, pr.url, pr.error, pr.detail or None)
+        log.info("  %s: %s %s", platform, pr.status, pr.url or pr.error or "")
+    _save(artifacts / "publish_report.json", [p.__dict__ for p in posts])
+    return posts
+
+
+def finish_status(db: RunLog, run_id: int, posts: list[PublishResult]) -> str:
+    ok = [p for p in posts if p.status in {"published", "draft"}]
+    status = "published" if len(ok) == len(posts) else ("partial" if ok else "failed")
+    db.update_run(run_id, status=status, error=None if status == "published" else
+                  "; ".join(f"{p.platform}: {p.error}" for p in posts if p.error))
+    return status
+
+
 def run(opts: RunOptions) -> RunResult:
     from lib.checkpoint import init_project
     from lib.llm_client import chat_meta
@@ -142,21 +167,9 @@ def run(opts: RunOptions) -> RunResult:
             result.status = "rendered"
             db.update_run(run_id, status="rendered")
             return result
-        for platform in opts.platforms:
-            log.info("Publishing to %s ...", platform)
-            try:
-                pr = get_publisher(platform)(video, md, opts.aspect, report.get("duration") or total)
-            except Exception as exc:
-                pr = PublishResult(platform, "failed", error=str(exc))
-            result.posts.append(pr)
-            db.post(run_id, platform, pr.status, pr.post_id, pr.url, pr.error, pr.detail or None)
-            log.info("  %s: %s %s", platform, pr.status, pr.url or pr.error or "")
-        _save(artifacts / "publish_report.json", [p.__dict__ for p in result.posts])
-        ok = [p for p in result.posts if p.status in {"published", "draft"}]
-        result.status = "published" if len(ok) == len(result.posts) else ("partial" if ok else "failed")
-        db.update_run(run_id, status=result.status,
-                      error=None if result.status == "published" else
-                      "; ".join(f"{p.platform}: {p.error}" for p in result.posts if p.error))
+        result.posts = publish_all(db, run_id, opts.platforms, video, md, opts.aspect,
+                                   report.get("duration") or total, artifacts)
+        result.status = finish_status(db, run_id, result.posts)
         return result
     except Exception as exc:
         db.update_run(run_id, status="failed", error=str(exc)[:2000])

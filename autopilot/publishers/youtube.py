@@ -68,7 +68,8 @@ def publish(video: Path, metadata: dict, aspect: str, seconds: float) -> Publish
         },
         "status": {
             "privacyStatus": privacy,
-            "selfDeclaredMadeForKids": False,
+            # Per app/template decision (promo/apps.yaml made_for_kids); topic videos default to False.
+            "selfDeclaredMadeForKids": bool(yt.get("made_for_kids", False)),
             # AI-written script + synthetic voice: disclose by default (YOUTUBE_SYNTHETIC_MEDIA=false to opt out).
             "containsSyntheticMedia": os.environ.get("YOUTUBE_SYNTHETIC_MEDIA", "true").lower() == "true",
         },
