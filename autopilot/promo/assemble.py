@@ -58,14 +58,39 @@ def story_context(app: dict[str, Any], manifest: dict[str, Any]) -> dict[str, An
                 if l.get("who") and l.get("who") != "narrator"), "")
     choice = next((s["choice"] for s in data["scenes"] if s.get("choice")), None)
     target = params.get("target", "zh")
-    title = data["title"]["en"] if isinstance(data["title"], dict) else str(data["title"])
-    blurb = data["blurb"]["en"] if isinstance(data.get("blurb"), dict) else str(data.get("blurb", ""))
+    # Title / blurb in the audience language when the story has it (stories carry vi / en / ja / zh).
+    lang_key = str(app.get("locale", "en")).split("_")[0]
+
+    def pick(v: Any) -> str:
+        text = " ".join(str(v.get(lang_key) or v.get("en", "")).split()) if isinstance(v, dict) else str(v or "")
+        # zh / ja story text is word-split with spaces for the reader; join it for display.
+        cjk = "\u3040-\u30ff\u3400-\u9fff"
+        return re.sub(rf" +(?=[{cjk}])|(?<=[{cjk}]) +", "", text) if lang_key in ("zh", "ja") else text
+
+    title = pick(data["title"])
+    blurb = pick(data.get("blurb", ""))
     cover = Path(app["path"]) / "assets" / "ui" / f"{data['cover']}.jpg"
+    language = app.get("language_names", {}).get(target, target)
+    prompt = (choice or {}).get("prompt", {}).get("en", "") if choice else ""
     return {
         "story_id": story_id, "title": title, "blurb": blurb, "hero": who.title() if who else "our hero",
-        "language": app.get("language_names", {}).get(target, target),
-        "choice_prompt": (choice or {}).get("prompt", {}).get("en", "") if choice else "",
+        "language": language, "choice_prompt": prompt,
         "cover": cover if cover.is_file() else None,
+        "video_desc": f'the story "{title}" ({blurb}) being read aloud in {language}, '
+                      f'stopping on a choice: "{prompt}"',
+        "outro_ask": "tease the choice and name the app",
+    }
+
+
+def app_context(app: dict[str, Any], manifest: dict[str, Any]) -> dict[str, Any]:
+    """Context for apps without story data: what the captured gameplay shows."""
+    params = manifest.get("capture_params", {})
+    item = params.get("song") or params.get("lesson") or params.get("type") or "demo"
+    return {
+        "story_id": str(item), "title": app["display_name"], "blurb": app.get("context", ""),
+        "hero": app.get("hero", "Bun"), "language": "", "choice_prompt": "", "cover": None,
+        "video_desc": app.get("context", "gameplay of the app"),
+        "outro_ask": "invite parents to try it and name the app",
     }
 
 
@@ -76,26 +101,37 @@ def make_copy(app: dict[str, Any], ctx: dict[str, Any], chat_meta: Optional[Call
     fallback = {k: _fmt(v, values) for k, v in app.get("fallback_copy", {}).items()}
     if chat_meta is None:
         return fallback, "fallback (no LLM)"
+    cfg = app.get("locale_cfg", {})
+    lang_name = cfg.get("name", "English")
     user = f"""App: {app['display_name']} ({app.get('audience', 'parents')})
-Approved claims:
+Approved claims (in {lang_name}):
 {chr(10).join('- ' + c for c in claims)}
-The video shows the story "{ctx['title']}" ({ctx['blurb']}) being read aloud in {ctx['language']},
-and stops on a choice: "{ctx['choice_prompt']}".
+The video shows {ctx['video_desc']}.
+Write all three lines in natural, warm {lang_name} as a native speaker would say them to a parent.
+Keep the app name "{app['display_name']}" and character names exactly as written.
 
 Return JSON:
 {{"hook": "spoken opening line to parents, max 12 words",
   "hook_overlay": "on-screen hook text, max 6 words",
-  "outro": "spoken closing line: tease the choice and name {app['display_name']}, max 16 words"}}"""
+  "outro": "spoken closing line: {ctx['outro_ask']} ({app['display_name']}), max 16 words"}}"""
     try:
         data, meta = chat_meta([{"role": "system", "content": COPY_SYSTEM}, {"role": "user", "content": user}],
                                json_mode=True, max_tokens=400)
         if on_llm_call:
             on_llm_call(meta)
         out = {k: " ".join(str(data.get(k, "")).split()) for k in ("hook", "hook_overlay", "outro")}
-        limits = {"hook": 14, "hook_overlay": 7, "outro": 18}
-        banned = re.compile(r"\d+\s*%|\bfree\b|\bbest\b|#1|\bfluent", re.I)
+        # Length: words, scaled for syllable languages (vi); characters for zh / ja.
+        if cfg.get("cjk"):
+            limits, size = {"hook": 30, "hook_overlay": 14, "outro": 40}, len
+        else:
+            k_scale = float(cfg.get("copy_scale", 1.0))
+            limits = {k: int(n * k_scale) for k, n in {"hook": 14, "hook_overlay": 7, "outro": 18}.items()}
+            size = lambda s: len(s.split())  # noqa: E731
+        terms = [r"\d+\s*%", r"\bfree\b", r"\bbest\b", "#1", r"\bfluent"] + \
+            [re.escape(t) for t in cfg.get("banned_terms", [])]
+        banned = re.compile("|".join(terms), re.I)
         for k, n in limits.items():
-            if not out[k] or len(out[k].split()) > n or banned.search(out[k]):
+            if not out[k] or size(out[k]) > n or banned.search(out[k]):
                 raise ValueError(f"{k!r} rejected: {out[k]!r}")
         if app["display_name"].lower() not in out["outro"].lower():
             raise ValueError("outro does not name the app")
@@ -105,11 +141,25 @@ Return JSON:
         return fallback, "fallback"
 
 
+def _localized(path: Path, locale: Optional[str]) -> Path:
+    """design/promo/end_card.png -> end_card_<locale>.png when that exists (text in the
+    audience language); the plain file otherwise (English or text-free design)."""
+    if locale:
+        loc = path.with_name(f"{path.stem}_{locale}{path.suffix}")
+        if loc.is_file():
+            return loc
+    return path
+
+
 def _no_llm(*_a, **_k):
     raise RuntimeError("LLM disabled")
 
 
-def _vo(text: str, out_dir: Path, voice: Optional[str]) -> tuple[Path, list[dict], float]:
+def _vo(text: str, out_dir: Path, voice: Optional[str], app: Optional[dict] = None) -> tuple[Path, list[dict], float]:
+    """Voiceover in the app's locale voice (Piper, or ElevenLabs when allowed)."""
+    if app and app.get("locale_cfg"):
+        from autopilot.promo.locale import voiceover
+        return voiceover(text, out_dir, app, allow_paid=bool(app.get("allow_paid_voice")), voice_override=voice)
     scene = type("VO", (), {"id": out_dir.name, "narration": text})()
     wav, parts = narration.synthesize([scene], out_dir, voice=voice)
     return wav, parts[0].words, parts[0].end
@@ -120,9 +170,40 @@ def _shift(words: list[dict], seconds: float) -> list[dict]:
     return [dict(w, startMs=w["startMs"] + ms, endMs=w["endMs"] + ms) for w in words]
 
 
+def _hook_frame(clip: str, out: Path, at: float = 1.5) -> Optional[str]:
+    """A still from the gameplay clip for the hook card (apps without cover art)."""
+    try:
+        out.parent.mkdir(parents=True, exist_ok=True)
+        run_cmd(["ffmpeg", "-y", "-v", "error", "-ss", f"{at}", "-i", clip, "-frames:v", "1", "-q:v", "2", str(out)])
+        return str(out) if out.is_file() else None
+    except Exception as exc:
+        log.warning("hook frame extraction failed: %s", exc)
+        return None
+
+
+def gameplay_showcase(app, manifest, ctx, copy, audio_dir: Path, voice: Optional[str]) -> Timeline:
+    """Phase-1 template for every app: hook card on a gameplay still -> gameplay -> end card.
+    Template-specific effects (countdowns, speed ramps, split layouts) come with event-rich PromoBots."""
+    from autopilot.promo import templates
+    from autopilot.promo.effects import clip_duration
+
+    prepared = templates.prepare(app, manifest, audio_dir.parent / "video" / "fx", copy)
+    if str(prepared) != manifest["clip_path"]:
+        log.info("%s effects applied -> %s", manifest["template"], prepared.name)
+        manifest = {**manifest, "clip_path": str(prepared), "duration_sec": clip_duration(prepared)}
+    hook_img = app.get("hook_card")
+    hook_path = Path(app.get("path", ".")) / hook_img if hook_img else None
+    if hook_path and hook_path.is_file():
+        cover = str(hook_path)
+    else:
+        cover = _hook_frame(manifest["clip_path"], audio_dir.parent / "images" / "hook_frame.jpg",
+                            at=float(app.get("hook_frame_at", 1.5)))
+    return story_cliffhanger(app, manifest, {**ctx, "cover": cover}, copy, audio_dir, voice)
+
+
 def story_cliffhanger(app, manifest, ctx, copy, audio_dir: Path, voice: Optional[str]) -> Timeline:
-    hook_wav, hook_words, hook_d = _vo(copy["hook"], audio_dir / "vo_hook", voice)
-    out_wav, out_words, out_d = _vo(copy["outro"], audio_dir / "vo_outro", voice)
+    hook_wav, hook_words, hook_d = _vo(copy["hook"], audio_dir / "vo_hook", voice, app)
+    out_wav, out_words, out_d = _vo(copy["outro"], audio_dir / "vo_outro", voice, app)
     lead = 0.3
     intro = max(2.8, lead + hook_d + 0.5)
     clip_d = float(manifest["duration_sec"])
@@ -132,7 +213,7 @@ def story_cliffhanger(app, manifest, ctx, copy, audio_dir: Path, voice: Optional
     stores = " & ".join(app.get("stores", [])) or "your app store"
     cta = app.get("cta") or f"On the {stores}"
     cover = str(ctx["cover"]) if ctx["cover"] else None
-    end_card = Path(app.get("path", ".")) / app["end_card"] if app.get("end_card") else None
+    end_card = _localized(Path(app.get("path", ".")) / app["end_card"], app.get("locale")) if app.get("end_card") else None
     end_cut: dict[str, Any] = (
         {"id": "endcard", "source": str(end_card), "animation": "zoom-out"}
         if end_card and end_card.is_file() else
@@ -157,7 +238,18 @@ def story_cliffhanger(app, manifest, ctx, copy, audio_dir: Path, voice: Optional
                     (Path(manifest["clip_path"]), intro), captions, total, copy)
 
 
-TEMPLATES = {"story_cliffhanger": story_cliffhanger}
+# Phase 1: every PRD template renders as gameplay_showcase until its PromoBot emits the
+# events its effects need (countdown, speed ramp, split layout, timelapse).
+TEMPLATES = {
+    "story_cliffhanger": story_cliffhanger,
+    "gameplay_showcase": gameplay_showcase,
+    "timed_challenge": gameplay_showcase,
+    "logic_execution": gameplay_showcase,
+    "brain_teaser": gameplay_showcase,
+    "experiment_wow": gameplay_showcase,
+    "timelapse_reveal": gameplay_showcase,
+    "musical_showcase": gameplay_showcase,
+}
 
 
 def mix_audio(tl: Timeline, out_path: Path) -> Path:
@@ -178,13 +270,19 @@ def mix_audio(tl: Timeline, out_path: Path) -> Path:
 
 
 def assemble(manifest_path: Path, platforms: list[str], dry_run: bool = False, voice: Optional[str] = None,
-             use_llm: bool = True) -> dict[str, Any]:
+             use_llm: bool = True, locale: Optional[str] = None, allow_paid_voice: bool = False) -> dict[str, Any]:
     from autopilot.promo import app_config, load_registry
     from lib.checkpoint import init_project
 
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     registry = load_registry()
-    app = app_config(manifest["app_id"], registry)
+    locale = locale or manifest.get("locale") or "en"
+    app = app_config(manifest["app_id"], registry, locale)
+    app["allow_paid_voice"] = allow_paid_voice
+    if platforms and not dry_run and app.get("review") != "approved":
+        raise PermissionError(
+            f"{app['id']} '{locale}' copy is '{app.get('review')}', not approved: review "
+            f"autopilot/promo/locales/{locale}.yaml before publishing (renders work with --dry-run)")
     template = TEMPLATES.get(manifest["template"])
     if template is None:
         raise NotImplementedError(f"template {manifest['template']!r} is not built yet")
@@ -192,8 +290,10 @@ def assemble(manifest_path: Path, platforms: list[str], dry_run: bool = False, v
     if use_llm:
         from lib.llm_client import chat_meta
 
-    ctx = story_context(app, manifest)
-    project_id = f"promo-{app['id']}-{ctx['story_id'] or 'demo'}-{time.strftime('%Y%m%d-%H%M%S')}".replace("_", "-")
+    ctx = story_context(app, manifest) if manifest["template"] == "story_cliffhanger" else app_context(app, manifest)
+    target = manifest.get("capture_params", {}).get("target")
+    tag = "-".join(p for p in (ctx["story_id"] or "demo", target if manifest["template"] == "story_cliffhanger" else "", locale) if p)
+    project_id = f"promo-{app['id']}-{tag}-{time.strftime('%Y%m%d-%H%M%S')}".replace("_", "-")
     pdir = init_project(project_id, title=f"{app['display_name']} promo", pipeline_type="promo", series="kawaii-promos")
     artifacts = pdir / "artifacts"
     db = RunLog()
@@ -204,11 +304,14 @@ def assemble(manifest_path: Path, platforms: list[str], dry_run: bool = False, v
         copy, source = make_copy(app, ctx, chat_meta, on_llm_call=lambda m: db.llm_call(run_id, "promo_copy", m))
         log.info("Copy (%s): %s", source, copy)
         tl = template(app, manifest, ctx, copy, pdir / "assets" / "audio", voice)
+        from autopilot.promo.locale import caption_style
+        cap_style, cap_props = caption_style(app)
         mixed = mix_audio(tl, pdir / "assets" / "audio" / "final_mix.wav")
         props = {
             "renderer_family": "explainer-data", "themeConfig": app.get("theme", {}), "tailPaddingSeconds": 0,
             "cuts": tl.cuts, "overlays": tl.overlays, "captions": tl.captions,
-            "captionStyle": {"wordsPerPage": 3, "fontSize": 76, "bottomOffset": 520},
+            "captionStyle": cap_style,
+            **({"captionProps": cap_props} if cap_props else {}),
             "audio": {"narration": {"src": str(mixed), "volume": 1.0}},
         }
         _save(artifacts / "promo_plan.json", {"manifest": manifest, "copy": copy, "copy_source": source,
@@ -224,7 +327,9 @@ def assemble(manifest_path: Path, platforms: list[str], dry_run: bool = False, v
 
         script = f"{copy['hook']} {app['display_name']}: {ctx['title']}. {ctx['blurb']} {copy['outro']}"
         md = meta_mod.generate(f"{ctx['title']} | {app['display_name']}", script, "9:16", report["duration"],
-                               chat_meta or _no_llm, on_llm_call=lambda m: db.llm_call(run_id, "metadata", m))
+                               chat_meta or _no_llm, on_llm_call=lambda m: db.llm_call(run_id, "metadata", m),
+                               language=app.get("locale_cfg", {}).get("name", "English"))
+        md["locale"], md["review"] = locale, app.get("review")
         md["youtube"]["made_for_kids"] = bool(app.get("made_for_kids", False))
         _save(artifacts / "publish_metadata.json", md)
 

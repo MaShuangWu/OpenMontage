@@ -2,7 +2,8 @@
 
 The project's window_*_override (432x864 preview size) beats --resolution, so the
 capture size is forced with a temporary ``override.cfg`` in the game repo, a standard
-Godot mechanism. It is created only if absent and always removed afterwards.
+Godot mechanism. It is created only if absent and always removed afterwards. The window
+is borderless so macOS does not shrink it to the screen (which clips the UI's edges).
 """
 
 from __future__ import annotations
@@ -19,7 +20,8 @@ log = logging.getLogger("autopilot.promo.capture")
 
 
 def _format_args(app: dict[str, Any], params: dict[str, Any]) -> tuple[list[str], dict[str, Any]]:
-    values = {**app["capture"].get("defaults", {}), **{k: v for k, v in params.items() if v is not None}}
+    locale_ui = {"ui": app["locale_cfg"]["ui"]} if app.get("locale_cfg", {}).get("ui") else {}
+    values = {**app["capture"].get("defaults", {}), **locale_ui, **{k: v for k, v in params.items() if v is not None}}
     return [str(a).format(**values) for a in app["capture"]["args"]], values
 
 
@@ -30,7 +32,8 @@ def capture(app: dict[str, Any], registry: dict[str, Any], inbox: Path,
     repo = Path(app["path"])
     args, values = _format_args(app, params)
     stamp = time.strftime("%Y%m%d-%H%M%S")
-    name = f"{app['id']}_{values.get('story') or values.get('level') or 'demo'}_{values.get('target', '')}_{stamp}".replace("__", "_")
+    item = next((values[k] for k in ("story", "song", "lesson", "type") if values.get(k)), "demo")
+    name = "_".join(str(p) for p in (app["id"], item, values.get("target", ""), app.get("locale", ""), stamp) if p)
     work = inbox / "raw"
     work.mkdir(parents=True, exist_ok=True)
     raw = work / f"{name}.avi"
@@ -41,10 +44,13 @@ def capture(app: dict[str, Any], registry: dict[str, Any], inbox: Path,
     override = repo / "override.cfg"
     if override.exists():
         raise MediaError(f"{override} already exists; refusing to overwrite it")
-    override.write_text(f"[display]\nwindow/size/window_width_override={w}\nwindow/size/window_height_override={h}\n",
-                        encoding="utf-8")
+    # Borderless: macOS constrains a titled window taller than the screen, and the UI then
+    # lays out for the constrained size (edges clipped). A borderless window is not constrained.
+    override.write_text(f"[display]\nwindow/size/window_width_override={w}\nwindow/size/window_height_override={h}\n"
+                        "window/size/borderless=true\n", encoding="utf-8")
     try:
-        cmd = [registry["godot"], "--path", str(repo), "--write-movie", str(raw), "--fixed-fps", str(fps),
+        cmd = [registry["godot"], "--path", str(repo), "--position", "0,0",
+               "--write-movie", str(raw), "--fixed-fps", str(fps),
                app["capture"]["scene"], "--", *args, f"--promo-events={events_path}"]
         log.info("Capturing %s: %s", app["display_name"], " ".join(args))
         # Movie Maker renders slower than real time; allow ~6x the clip's max length.
@@ -68,6 +74,7 @@ def capture(app: dict[str, Any], registry: dict[str, Any], inbox: Path,
     events = [dict(e, t=round(max(0.0, float(e["t"]) - trim), 3)) for e in timeline.get("events", [])]
     manifest = {
         "app_id": app["id"],
+        "locale": app.get("locale", "en"),
         "app_display_name": app["display_name"],
         "template": app["template"],
         "clip_path": str(clip),

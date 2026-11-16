@@ -28,8 +28,9 @@ def _clip(text: Any, n: int) -> str:
 
 def generate(title: str, script: str, aspect: str, seconds: float,
              chat_meta: Callable[..., tuple[Any, dict]],
-             on_llm_call: Optional[Callable[[dict], None]] = None) -> dict[str, Any]:
-    user = f"""Video title draft: {title}
+             on_llm_call: Optional[Callable[[dict], None]] = None, language: str = "English") -> dict[str, Any]:
+    user = f"""Write every field in {language} (hashtags may mix {language} and English).
+Video title draft: {title}
 Format: {"vertical short" if aspect == "9:16" else "horizontal long-form"}, {int(seconds)} seconds.
 Narration script:
 {script[:6000]}

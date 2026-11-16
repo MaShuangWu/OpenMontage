@@ -1,6 +1,8 @@
 # Autopilot: unattended topic → MP4 → social posts
 
 Implements [requirements.md](requirements.md) on top of OpenMontage without changing its core.
+For the Kawaii app promos (Godot capture, languages, nightly runs) see
+[promo_pipeline.md](promo_pipeline.md).
 
 ```
 run_pipeline.py ──► autopilot/planner     script + scene plan (JSON)  ─┐

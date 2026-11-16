@@ -18,12 +18,19 @@ APP = {
                       "outro": "Where will {hero} go? Find out in Kawaii Stories."},
 }
 CTX = {"title": "Bun's Morning Walk", "blurb": "b", "hero": "Bun", "language": "Chinese",
-       "choice_prompt": "Where should Bun go next?", "cover": None, "story_id": "ch01"}
+       "choice_prompt": "Where should Bun go next?", "cover": None, "story_id": "ch01",
+       "video_desc": "a story read aloud", "outro_ask": "tease the choice and name the app"}
 
 
 def test_registry_only_exposes_ready_apps():
     reg = load_registry()
     assert app_config("stories", reg)["path"].endswith("kawaii-stories")
+    for app_id, app in reg["apps"].items():
+        cfg = app_config(app_id, reg)
+        assert cfg["template"] in assemble.TEMPLATES, app_id
+        assert cfg["approved_claims"] and cfg["fallback_copy"]["outro"], app_id
+        assert cfg["display_name"] in cfg["fallback_copy"]["outro"], app_id
+    reg["apps"]["math"] = {**reg["apps"]["math"], "status": "todo"}
     with pytest.raises(NotImplementedError):
         app_config("math", reg)
     with pytest.raises(KeyError):
@@ -54,7 +61,7 @@ def test_copy_accepts_valid_llm_output():
 
 
 def test_story_cliffhanger_timeline(monkeypatch, tmp_path):
-    def fake_vo(text, out_dir, voice):
+    def fake_vo(text, out_dir, voice, app=None):
         return tmp_path / f"{out_dir.name}.wav", [{"word": "hi", "startMs": 0, "endMs": 500}], 2.0
     monkeypatch.setattr(assemble, "_vo", fake_vo)
     manifest = {"clip_path": "/clip.mp4", "duration_sec": 15.0,
@@ -74,7 +81,7 @@ def test_story_cliffhanger_timeline(monkeypatch, tmp_path):
 
 
 def test_designed_end_card_is_used_when_present(monkeypatch, tmp_path):
-    monkeypatch.setattr(assemble, "_vo", lambda t, d, v: (tmp_path / "v.wav", [], 1.0))
+    monkeypatch.setattr(assemble, "_vo", lambda t, d, v, a=None: (tmp_path / "v.wav", [], 1.0))
     (tmp_path / "design").mkdir()
     (tmp_path / "design" / "end.png").write_bytes(b"png")
     app = {**APP, "path": str(tmp_path), "end_card": "design/end.png", "cta": "Coming soon"}

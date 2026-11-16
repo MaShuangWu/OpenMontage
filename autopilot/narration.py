@@ -69,11 +69,12 @@ def _tts_text(text: str) -> str:
 
 
 def synthesize(scenes, out_dir: Path, voice: Optional[str] = None,
-               tts_execute: Optional[Callable[[dict], object]] = None) -> tuple[Path, list[SceneAudio]]:
+               tts_execute: Optional[Callable[[dict], object]] = None,
+               length_scale: Optional[float] = None) -> tuple[Path, list[SceneAudio]]:
     """Render each scene to WAV, then concatenate into one narration track."""
     out_dir.mkdir(parents=True, exist_ok=True)
     voice = voice or os.environ.get("PIPER_VOICE", "en_US-lessac-medium")
-    length_scale = float(os.environ.get("PIPER_LENGTH_SCALE", "1.0"))
+    length_scale = float(length_scale or os.environ.get("PIPER_LENGTH_SCALE", "1.0"))
     if tts_execute is None:
         from tools.audio.piper_tts import PiperTTS
         tts_execute = PiperTTS().execute

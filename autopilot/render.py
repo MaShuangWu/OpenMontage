@@ -47,8 +47,9 @@ def render(props: dict[str, Any], output_path: Path, aspect: str,
         execute = VideoCompose().execute
     seconds = max((c["out_seconds"] for c in props["cuts"]), default=60)
     # video_compose kills the render after max(600s, timeout_ms/1000 + 60). CPU-only boxes
-    # render 1080p at a few fps, so budget ~20s of wall time per second of video.
-    timeout_ms = int(os.environ.get("REMOTION_TIMEOUT_MS") or max(120_000, seconds * 20_000))
+    # render 1080p at a few fps (slower still when other jobs share the CPU), so budget
+    # ~40s of wall time per second of video, never less than 15 minutes.
+    timeout_ms = int(os.environ.get("REMOTION_TIMEOUT_MS") or max(900_000, seconds * 40_000))
     inputs: dict[str, Any] = {
         "operation": "remotion_render",
         "edit_decisions": props,
