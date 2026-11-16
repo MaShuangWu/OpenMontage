@@ -1,4 +1,4 @@
-[English](README.md) | [Português (Brasil)](README_pt-BR.md) | **Español** | [简体中文](README_zh-CN.md)
+[English](README.md) | [Português (Brasil)](README_pt-BR.md) | **Español** | [简体中文](README_zh-CN.md) | [日本語](README_ja.md)
 
 > Traducción del [README en inglés](README.md), que es la fuente de verdad. Si ambos difieren, manda el inglés.
 
