@@ -45,6 +45,21 @@ def chat(
     timeout: float = 180.0,
 ) -> Any:
     """Send a chat completion through the router; return text (or dict if json_mode)."""
+    return chat_meta(messages, model=model, json_mode=json_mode, temperature=temperature,
+                     max_tokens=max_tokens, timeout=timeout)[0]
+
+
+def chat_meta(
+    messages: list[dict[str, Any]],
+    *,
+    model: Optional[str] = None,
+    json_mode: bool = False,
+    temperature: Optional[float] = None,
+    max_tokens: Optional[int] = None,
+    timeout: float = 180.0,
+) -> tuple[Any, dict[str, Any]]:
+    """Like ``chat`` but also returns routing metadata:
+    ``{"provider", "model", "fallbacks"}`` taken from the router's response headers."""
     llm = OpenMontageConfig.load().llm
     if llm.provider != "router":
         raise RuntimeError(
@@ -63,11 +78,16 @@ def chat(
     resp = httpx.post(f"{base}/chat/completions", json=payload, headers=headers, timeout=timeout)
     if resp.status_code >= 300:
         raise RuntimeError(f"LLM router error {resp.status_code}: {resp.text[:1000]}")
+    meta = {
+        "provider": resp.headers.get("x-llm-router-provider"),
+        "model": resp.headers.get("x-llm-router-model"),
+        "fallbacks": int(resp.headers.get("x-llm-router-fallbacks", "0") or 0),
+    }
     content = resp.json()["choices"][0]["message"]["content"]
     if not json_mode:
-        return content
+        return content, meta
     text = content.strip()
     if text.startswith("```"):
         text = text.strip("`")
         text = text[4:] if text.lower().startswith("json") else text
-    return json.loads(text)
+    return json.loads(text), meta
