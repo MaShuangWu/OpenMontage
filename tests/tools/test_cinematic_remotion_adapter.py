@@ -213,3 +213,248 @@ def test_remotion_render_rejects_cinematic_overlays_before_rendering(
         "CinematicRenderer does not support non-empty overlays; remove overlays "
         "or use a composition that supports them."
     )
+
+
+def test_resolve_music_canonical_and_legacy(tmp_path) -> None:
+    bed = tmp_path / "bed.mp3"
+    bed.write_bytes(b"dummy-bed")
+    legacy = tmp_path / "legacy.mp3"
+    legacy.write_bytes(b"dummy-legacy")
+    asset_lookup = {
+        "asset_music_bed": {"id": "asset_music_bed", "path": str(bed)},
+        "asset_legacy": {"id": "asset_legacy", "path": str(legacy)},
+    }
+
+    # Canonical audio.music
+    canonical_ed = {
+        "audio": {
+            "music": {
+                "asset_id": "asset_music_bed",
+                "volume": 0.6,
+                "fade_in_seconds": 1.0,
+                "fade_out_seconds": 4.0,
+                "ducking": False,
+            }
+        }
+    }
+    resolved, err = VideoCompose._resolve_music(canonical_ed, asset_lookup)
+    assert err is None
+    assert resolved is not None
+    assert resolved["src"] == str(bed.resolve())
+    assert resolved["volume"] == 0.6
+    assert resolved["fadeInSeconds"] == 1.0
+    assert resolved["fadeOutSeconds"] == 4.0
+    assert resolved["ducking"] is False
+    assert "fade_in_seconds" not in resolved
+    assert "fade_out_seconds" not in resolved
+
+    # Legacy music
+    legacy_ed = {
+        "music": {
+            "asset_id": "asset_legacy",
+            "volume": 0.3,
+            "fade_in_seconds": 0.5,
+            "fade_out_seconds": 2.0,
+        }
+    }
+    resolved, err = VideoCompose._resolve_music(legacy_ed, asset_lookup)
+    assert err is None
+    assert resolved is not None
+    assert resolved["src"] == str(legacy.resolve())
+    assert resolved["volume"] == 0.3
+    assert resolved["fadeInSeconds"] == 0.5
+    assert resolved["fadeOutSeconds"] == 2.0
+    assert "fade_in_seconds" not in resolved
+    assert "fade_out_seconds" not in resolved
+
+
+def test_resolve_music_omitted_volume_and_fades_preserves_composition_defaults(tmp_path) -> None:
+    bed = tmp_path / "bed.mp3"
+    bed.write_bytes(b"dummy-bed")
+    asset_lookup = {
+        "asset_music_bed": {"id": "asset_music_bed", "path": str(bed)},
+    }
+    ed = {
+        "audio": {
+            "music": {
+                "asset_id": "asset_music_bed",
+            }
+        }
+    }
+    resolved, err = VideoCompose._resolve_music(ed, asset_lookup)
+    assert err is None
+    assert resolved is not None
+    assert "volume" not in resolved
+    assert "fadeInSeconds" not in resolved
+    assert "fadeOutSeconds" not in resolved
+
+
+def test_resolve_music_missing_asset_id_fails_loudly() -> None:
+    ed = {
+        "audio": {
+            "music": {
+                "asset_id": "asset_nonexistent_bed",
+            }
+        }
+    }
+    resolved, err = VideoCompose._resolve_music(ed, {})
+    assert resolved is None
+    assert err == "Music asset_id 'asset_nonexistent_bed' not found in asset_manifest."
+
+
+def test_resolve_music_missing_file_fails_loudly(tmp_path) -> None:
+    nonexistent = tmp_path / "nonexistent.mp3"
+    asset_lookup = {
+        "asset_music_bed": {"id": "asset_music_bed", "path": str(nonexistent)},
+    }
+    ed = {
+        "audio": {
+            "music": {
+                "asset_id": "asset_music_bed",
+            }
+        }
+    }
+    resolved, err = VideoCompose._resolve_music(ed, asset_lookup)
+    assert resolved is None
+    assert err == f"Music file not found: {nonexistent}"
+
+    # Explicit src pointing to nonexistent file
+    ed_src = {
+        "audio": {
+            "music": {
+                "src": str(nonexistent),
+            }
+        }
+    }
+    resolved2, err2 = VideoCompose._resolve_music(ed_src, {})
+    assert resolved2 is None
+    assert err2 == f"Music file not found: {nonexistent}"
+
+
+def test_render_resolves_and_stages_music_into_remotion_props(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(VideoCompose, "_remotion_available", lambda self: True)
+    clip = tmp_path / "clip.mp4"
+    clip.write_bytes(b"dummy-clip")
+    music = tmp_path / "music_bed.mp3"
+    music.write_bytes(b"dummy-audio-content")
+    output = tmp_path / "out.mp4"
+    captured = {}
+
+    def fake_run_command(self, command, **kwargs):
+        captured["command"] = command
+        props_arg = next(arg for arg in command if arg.startswith("--props="))
+        captured["props"] = json.loads(Path(props_arg.split("=", 1)[1]).read_text())
+        public_arg = next(arg for arg in command if arg.startswith("--public-dir="))
+        public_dir = Path(public_arg.split("=", 1)[1])
+        captured["staged_music_exists"] = (
+            public_dir / captured["props"]["music"]["src"]
+        ).exists()
+        output.write_bytes(b"rendered-mp4")
+
+    monkeypatch.setattr(VideoCompose, "run_command", fake_run_command)
+    monkeypatch.setattr(
+        VideoCompose,
+        "_run_final_review",
+        lambda self, *args, **kwargs: {"status": "pass", "issues": []},
+    )
+
+    result = VideoCompose().execute({
+        "operation": "render",
+        "output_path": str(output),
+        "edit_decisions": {
+            "renderer_family": "documentary-montage",
+            "render_runtime": "remotion",
+            "cuts": [
+                {
+                    "id": "c1",
+                    "source": "asset_clip",
+                    "in_seconds": 0,
+                    "out_seconds": 4,
+                }
+            ],
+            "audio": {
+                "music": {
+                    "asset_id": "asset_music_bed",
+                    "volume": 0.6,
+                    "fade_in_seconds": 1.0,
+                    "fade_out_seconds": 4.0,
+                    "ducking": False,
+                }
+            },
+        },
+        "asset_manifest": {
+            "version": "1.0",
+            "assets": [
+                {"id": "asset_clip", "path": str(clip)},
+                {"id": "asset_music_bed", "path": str(music)},
+            ],
+        },
+    })
+
+    assert result.success, result.error
+    assert captured["staged_music_exists"] is True
+    # Verify top-level music prop for CinematicRenderer
+    music_prop = captured["props"]["music"]
+    assert music_prop["volume"] == 0.6
+    assert music_prop["fadeInSeconds"] == 1.0
+    assert music_prop["fadeOutSeconds"] == 4.0
+    assert music_prop["src"] != str(music)  # Staged filename
+    # Verify audio.music prop for Explainer
+    assert captured["props"]["audio"]["music"]["src"] == music_prop["src"]
+    # 1 video clip + 1 music file = 2 staged media
+    assert result.data["staged_media_count"] == 2
+
+
+def test_render_missing_music_asset_id_returns_error(tmp_path) -> None:
+    clip = tmp_path / "clip.mp4"
+    clip.write_bytes(b"dummy-clip")
+    result = VideoCompose().execute({
+        "operation": "render",
+        "output_path": str(tmp_path / "out.mp4"),
+        "edit_decisions": {
+            "renderer_family": "documentary-montage",
+            "render_runtime": "remotion",
+            "cuts": [{"id": "c1", "source": "asset_clip", "in_seconds": 0, "out_seconds": 4}],
+            "audio": {
+                "music": {
+                    "asset_id": "asset_missing_music",
+                }
+            },
+        },
+        "asset_manifest": {
+            "version": "1.0",
+            "assets": [{"id": "asset_clip", "path": str(clip)}],
+        },
+    })
+    assert not result.success
+    assert "Music asset_id 'asset_missing_music' not found in asset_manifest." in result.error
+
+
+def test_render_missing_music_file_returns_error(tmp_path) -> None:
+    clip = tmp_path / "clip.mp4"
+    clip.write_bytes(b"dummy-clip")
+    missing_music = tmp_path / "missing_music.mp3"
+    result = VideoCompose().execute({
+        "operation": "render",
+        "output_path": str(tmp_path / "out.mp4"),
+        "edit_decisions": {
+            "renderer_family": "documentary-montage",
+            "render_runtime": "remotion",
+            "cuts": [{"id": "c1", "source": "asset_clip", "in_seconds": 0, "out_seconds": 4}],
+            "audio": {
+                "music": {
+                    "asset_id": "asset_music_bed",
+                }
+            },
+        },
+        "asset_manifest": {
+            "version": "1.0",
+            "assets": [
+                {"id": "asset_clip", "path": str(clip)},
+                {"id": "asset_music_bed", "path": str(missing_music)},
+            ],
+        },
+    })
+    assert not result.success
+    assert f"Music file not found: {missing_music}" in result.error
+
