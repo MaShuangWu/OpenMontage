@@ -16,5 +16,10 @@ setup(
         "certifi>=2026.10.19",
         "google-genai>=1.0.0",
         "openai>=2.44.0",
+        "fastapi>=0.110",
+        "uvicorn>=0.29",
     ],
+    package_data={
+        "clipper_studio": ["ui/*.html", "ui/*.css", "ui/*.js"],
+    },
 )

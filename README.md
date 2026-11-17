@@ -210,6 +210,17 @@ That's it. The agent researches your topic with live web search, generates AI im
 
 Existing environments: activate the project environment and run `python -m pip install --upgrade 'pip>=26.2.2' 'certifi>=2026.10.19'`, then restart long-running Python processes. These versions update both the application CA bundle and pip's separate bundled CA store for the [eMudhra intermediate CA compromise](https://emudhra.we-have-a-problem.com/). Update the operating system's trust store too: pip may also use system certificates, and custom CA bundles need separate maintenance. `make install` and `make install-dev` enforce the Python package minimums on subsequent installs.
 
+### Personal Clip Studio
+
+For manual, local clipping without an AI provider, install the project dependencies and run:
+
+```powershell
+python -m pip install -r requirements.txt
+python -m clipper_studio
+```
+
+The Studio opens at `http://127.0.0.1:4760`. Import a video, mark in/out points, and export one or all selected moments as MP4. Portrait export uses a fixed center crop; it does not track a speaker. Clip selection is manual, and automatic highlight detection, captions, and publishing are not included. Source videos and exports stay on the local machine in `.backlot/clipper-studio/` (inside this checkout); FFmpeg and ffprobe must be available on `PATH`.
+
 ### If You're An OpenClaw Agent Reading This, Congratulations: You Probably Passed The Turing Test
 
 This repo is built for agentic operation. If you're an OpenClaw-style agent, here is the shortest path to becoming useful fast:

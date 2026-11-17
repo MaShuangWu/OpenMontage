@@ -1,0 +1,166 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f6f7fb">
+  <title>Clip Studio — OpenMontage</title>
+  <link rel="stylesheet" href="/static/clipper.css">
+</head>
+<body>
+  <!--
+  THESIS: A hands-on clip editor, not a numbered upload wizard or an AI promise.
+  OWN-WORLD: OpenMontage violet, bright work surfaces, a quiet ink sidebar, and a
+  dark, uncluttered video stage; controls stay compact and familiar.
+  STORY: Bring in a local source, mark exact moments, review the clip queue, export.
+  FIRST VIEWPORT: Source library left, large player and scrubber center, clip queue
+  and export controls right; the import action stays visible in the top bar.
+  FORM: A desktop editing workspace using familiar creator-tool navigation, adapted
+  to local manual clipping; no Klap marks, claims, or assets are reused.
+  -->
+  <div class="app-shell">
+    <aside class="sidebar">
+      <a class="brand" href="/" aria-label="OpenMontage Clip Studio">
+        <span class="brand-mark" aria-hidden="true">O</span>
+        <span class="brand-copy"><b>OpenMontage</b><small>CLIP STUDIO</small></span>
+      </a>
+
+      <nav class="primary-nav" aria-label="Navigation principale">
+        <a class="nav-link active" href="#studio"><span aria-hidden="true">▦</span> Studio</a>
+        <a class="nav-link" href="#sourcePanel"><span aria-hidden="true">▤</span> Mes vidéos</a>
+        <a class="nav-link" href="#exportsSection"><span aria-hidden="true">↥</span> Exports</a>
+      </nav>
+
+      <section class="source-panel" id="sourcePanel" aria-label="Bibliothèque vidéo">
+        <div class="sidebar-heading">
+          <h2>Vidéos sources</h2>
+          <span id="sourceCount">0</span>
+        </div>
+        <label class="upload-zone" for="fileInput">
+          <span class="upload-icon" aria-hidden="true">↑</span>
+          <b>Importer une vidéo</b>
+          <span>MP4, MOV, MKV, WebM</span>
+          <input id="fileInput" type="file" accept="video/mp4,video/quicktime,video/x-matroska,video/webm,video/x-m4v,.m4v">
+        </label>
+        <p class="upload-status" id="uploadStatus" role="status"></p>
+        <div class="source-list" id="sourceList"></div>
+        <p class="upload-limit">Jusqu’à 8 Gio · fichiers conservés sur ce disque</p>
+      </section>
+
+      <div class="sidebar-footer">
+        <span class="local-indicator"><i></i> Traitement local</span>
+        <p>Les moments sont sélectionnés manuellement. Aucun service externe n’est appelé.</p>
+      </div>
+    </aside>
+
+    <div class="app-main">
+      <header class="topbar">
+        <div class="breadcrumbs"><span>Clip Studio</span><span aria-hidden="true">/</span><b>Éditeur</b></div>
+        <div class="topbar-actions">
+          <span class="local-badge"><i></i> Sur cet appareil</span>
+          <button class="button button-primary import-button" id="importVideoButton" type="button">＋ Importer une vidéo</button>
+        </div>
+      </header>
+
+      <main id="studio">
+        <div class="page-heading">
+          <div>
+            <h1>Créer des clips</h1>
+            <p>Repérez les moments à garder et préparez vos exports.</p>
+          </div>
+          <span class="workflow-note"><span aria-hidden="true">✦</span> Découpe manuelle · export MP4</span>
+        </div>
+
+        <section class="workspace" aria-label="Espace de montage">
+          <section class="editor-column">
+            <div class="panel player-panel">
+              <div class="video-heading">
+                <div class="video-title">
+                  <span class="video-file-icon" aria-hidden="true">▶</span>
+                  <div>
+                    <h2 id="sourceInfo">Aucune vidéo sélectionnée</h2>
+                    <p>Utilisez la barre de lecture pour choisir un passage.</p>
+                  </div>
+                </div>
+                <span class="local-pill"><i></i> Local</span>
+              </div>
+
+              <div class="player-frame" id="playerFrame">
+                <div class="player-empty" id="playerEmpty">
+                  <span class="empty-play" aria-hidden="true">▶</span>
+                  <b>Votre espace de prévisualisation</b>
+                  <small>Importez une vidéo pour commencer à repérer vos clips.</small>
+                  <button class="button button-light" id="emptyImportButton" type="button">Choisir une vidéo</button>
+                </div>
+                <video id="preview" controls playsinline preload="metadata" hidden></video>
+              </div>
+
+              <div class="timeline">
+                <div class="timeline-readout"><span id="currentTime">00:00.0</span><span>/</span><span id="duration">00:00.0</span></div>
+                <input id="timelineScrubber" type="range" min="0" max="0" step="0.1" value="0" aria-label="Position dans la vidéo" disabled>
+                <span class="timeline-hint">Faites glisser pour parcourir la vidéo</span>
+              </div>
+
+              <div class="trim-grid">
+                <label class="time-field">
+                  <span>Début du clip</span>
+                  <div><input id="startTime" type="number" min="0" step="0.1" value="0"><button id="markStart" type="button" title="Définir le début à la position actuelle" disabled>Marquer</button></div>
+                </label>
+                <span class="trim-divider" aria-hidden="true">→</span>
+                <label class="time-field">
+                  <span>Fin du clip</span>
+                  <div><input id="endTime" type="number" min="0" step="0.1" value="0"><button id="markEnd" type="button" title="Définir la fin à la position actuelle" disabled>Marquer</button></div>
+                </label>
+                <label class="name-field">
+                  <span>Nom du clip</span>
+                  <input id="clipTitle" type="text" maxlength="100" placeholder="Ex. Le moment clé">
+                </label>
+                <button class="button button-primary add-button" id="addClip" type="button" disabled><span aria-hidden="true">＋</span> Ajouter le clip</button>
+              </div>
+            </div>
+
+            <section class="exports-section panel" id="exportsSection">
+              <div class="exports-heading">
+                <div><h2>Exports récents</h2><p>Vos fichiers MP4 prêts à télécharger.</p></div>
+                <span id="exportCount">0 fichier</span>
+              </div>
+              <div class="exports-grid" id="exportsList">
+                <p class="empty-exports">Vos exports apparaîtront ici.</p>
+              </div>
+            </section>
+          </section>
+
+          <aside class="panel clips-panel" id="clipsPanel">
+            <div class="clips-heading">
+              <div><h2>Vos clips</h2><p>Prévisualisez avant l’export.</p></div>
+              <span class="count-pill" id="clipCount">0 clip</span>
+            </div>
+            <div class="clip-list" id="clipList">
+              <div class="empty-list">
+                <span aria-hidden="true">✂</span>
+                <b>Aucun clip pour le moment</b>
+                <small>Marquez un début et une fin, puis ajoutez le passage à votre liste.</small>
+              </div>
+            </div>
+            <div class="export-settings">
+              <label class="framing-select">
+                <span>Format d’export</span>
+                <select id="framing">
+                  <option value="source">Conserver le format source</option>
+                  <option value="portrait">Portrait 9:16 · recadrage centré</option>
+                </select>
+              </label>
+              <p class="export-hint">Le recadrage portrait est fixe, sans suivi de sujet.</p>
+              <button class="button button-primary export-button" id="exportAll" type="button" disabled>Exporter les clips <span aria-hidden="true">↗</span></button>
+              <p class="export-status" id="exportStatus" role="status"></p>
+            </div>
+          </aside>
+        </section>
+
+        <footer><span>OPENMONTAGE · CLIP STUDIO</span><span>Vos vidéos restent sur votre appareil</span></footer>
+      </main>
+    </div>
+  </div>
+  <script type="module" src="/static/clipper.js"></script>
+</body>
+</html>

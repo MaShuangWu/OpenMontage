@@ -80,6 +80,12 @@ class VideoTrimmer(BaseTool):
                     "fast path — it snaps the cut to the nearest keyframe."
                 ),
             },
+            "aspect_ratio": {
+                "type": "string",
+                "enum": ["source", "9:16"],
+                "default": "source",
+                "description": "Keep the source frame or center-crop to portrait 9:16.",
+            },
         },
     }
 
@@ -90,7 +96,7 @@ class VideoTrimmer(BaseTool):
     resume_support = ResumeSupport.FROM_START
     idempotency_key_fields = [
         "operation", "input_path", "start_seconds", "end_seconds",
-        "speed_factor", "segments", "codec",
+        "speed_factor", "segments", "codec", "aspect_ratio",
     ]
     side_effects = ["writes video file to output_path"]
     user_visible_verification = ["Play trimmed output and verify cut points"]
@@ -122,6 +128,9 @@ class VideoTrimmer(BaseTool):
         start_s = inputs.get("start_seconds", 0)
         end_s = inputs.get("end_seconds")
         codec = inputs.get("codec", "auto")
+        aspect_ratio = inputs.get("aspect_ratio", "source")
+        if aspect_ratio not in {"source", "9:16"}:
+            return ToolResult(success=False, error=f"Unsupported aspect ratio: {aspect_ratio}")
         output_path = Path(
             inputs.get("output_path", str(input_path.with_stem(f"{input_path.stem}_cut")))
         )
@@ -130,7 +139,12 @@ class VideoTrimmer(BaseTool):
         # into the source snaps to the nearest one and returns the wrong range.
         # Cutting from zero has no such problem, so copy stays the fast path there.
         if codec == "auto":
-            codec = "copy" if float(start_s) == 0 else "libx264"
+            codec = "copy" if float(start_s) == 0 and aspect_ratio == "source" else "libx264"
+        elif aspect_ratio != "source" and codec == "copy":
+            return ToolResult(
+                success=False,
+                error="Portrait cropping requires video encoding; codec='copy' is not supported",
+            )
 
         # -ss must precede -i: as an output option it makes ffmpeg keep the
         # source timestamps, so the clip's frames start at their original PTS
@@ -148,6 +162,12 @@ class VideoTrimmer(BaseTool):
             # timestamps so the clip still starts at 0.
             cmd.extend(["-c", "copy", "-avoid_negative_ts", "make_zero"])
         else:
+            if aspect_ratio == "9:16":
+                cmd.extend([
+                    "-vf",
+                    "crop='2*floor(min(iw,ih*9/16)/2)':"
+                    "'2*floor(min(ih,iw*16/9)/2)',scale=1080:1920",
+                ])
             cmd.extend(["-c:v", codec, "-c:a", "aac"])
         cmd.append(str(output_path))
 
