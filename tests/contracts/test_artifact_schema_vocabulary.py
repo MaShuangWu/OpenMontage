@@ -7,8 +7,9 @@ trail then says something that did not happen. Reported as calesthio/OpenMontage
 
 Two cases, both grounded in an explicit instruction rather than in taste:
 
-- `decision_log` had no `approval_policy` category, though AGENT_GUIDE.md
-  names it as the one mechanism that makes full-run pre-authorization count.
+- `decision_log` must accept the `approval_policy` category, which
+  AGENT_GUIDE.md names as the one mechanism that makes full-run
+  pre-authorization count (the enum value itself landed upstream in #760).
 - `proposal_packet` had no `source_type` for a track fetched through a
   `music_search` tool, though AGENT_GUIDE.md requires the music plan to offer
   royalty-free search — and `pixabay_music` serves it with no API key.
