@@ -317,12 +317,12 @@ Official references: [Seedance model list](https://www.volcengine.com/docs/82379
 
 ---
 
-### Alibaba DashScope — Qwen Image + TTS + ASR
+### Alibaba DashScope — Qwen Image + Wan 3.0 Video + TTS + ASR
 
-> **Best for Chinese-language production.** One key unlocks Qwen-Image generation, Qwen-TTS Mandarin narration, and Qwen-ASR with word-level timestamps — the only DashScope path that provides word-level granularity for subtitle alignment.
+> **Best for Chinese-language production.** One key unlocks Qwen-Image generation, Wan 3.0 video generation, Qwen-TTS Mandarin narration, and Qwen-ASR with word-level timestamps — the only DashScope path that provides word-level granularity for subtitle alignment.
 
-**Tools unlocked:** `dashscope_image`, `dashscope_tts`, `dashscope_asr`
-**Env var:** `DASHSCOPE_API_KEY`
+**Tools unlocked:** `dashscope_image`, `dashscope_video`, `dashscope_tts`, `dashscope_asr`
+**Env vars:** `DASHSCOPE_API_KEY`. Wan 3.0 video also needs `DASHSCOPE_WORKSPACE_ID` unless an endpoint override is configured.
 
 #### Setup
 
@@ -334,13 +334,20 @@ Official references: [Seedance model list](https://www.volcengine.com/docs/82379
 #### What it's best for
 
 - Chinese-language image generation with strong prompt understanding (Qwen-Image)
+- Text, image, first/last-frame, and reference video with native audio, up to 30s (Wan 3.0: `wan3.0-video`, or the faster `wan3.0-video-prime`)
 - Natural Mandarin narration (Qwen-TTS, Cherry voice)
 - Word-level timestamp transcription for subtitle alignment (Qwen-ASR filetrans)
 - Replacing the broken `whisperx` slot for ASR
 
 #### API notes
 
-DashScope's `/compatible-mode/v1/` only supports `/chat/completions` and `/embeddings`. Image gen, TTS, and ASR all use DashScope-native endpoints with nested `{model, input, parameters}` request shape — not OpenAI-compatible paths.
+DashScope's `/compatible-mode/v1/` only supports `/chat/completions` and `/embeddings`. Image gen, video gen, TTS, and ASR all use DashScope-native endpoints with nested `{model, input, parameters}` request shape — not OpenAI-compatible paths.
+
+The video tool (`wan3.0-video` / `wan3.0-video-prime`) submits an async task and polls it; the clip URL expires after 24 hours, so the tool downloads it immediately. The API defaults to 1080P; `dashscope_video` defaults to 720P to roughly halve the per-second cost. Local images, videos, and audio are inlined as base64, so no upload host is needed.
+
+For video, set `DASHSCOPE_WORKSPACE_ID` to the Model Studio workspace ID and `DASHSCOPE_REGION` to the API key's region. The default is `cn-beijing`. Other regions are `ap-southeast-1`, `ap-northeast-1`, `cn-hongkong`, `eu-central-1`, and `us-east-1`. The endpoint is `https://<workspace-id>.<region>.maas.aliyuncs.com`. Set `DASHSCOPE_BASE_URL` to override it completely. See the [Wan 3.0 API reference](https://help.aliyun.com/zh/model-studio/wan3-video-generation-api-reference).
+
+Set `job_path` to save the accepted task before polling. If polling or download fails, pass the returned `data.resume_job` (or the saved JSON object) as `resume_job` to `dashscope_video` using the same workspace endpoint. The tool only queries and downloads on resume. If submission acceptance is unknown, check for the original task ID before submitting again. The result's `cost_usd` is unknown when the API omits billed duration.
 
 The ASR tool (`qwen3-asr-flash-filetrans`) uses an async submit-poll pattern. Audio must be at a publicly accessible URL (local files are not supported). Word timestamps are in milliseconds, normalized to seconds by the tool.
 
@@ -349,6 +356,8 @@ The ASR tool (`qwen3-asr-flash-filetrans`) uses an async submit-poll pattern. Au
 | Model | Price |
 |------|-------|
 | `qwen-image-2.0-pro` | ~$0.02 per image (check console for current rates) |
+| `wan3.0-video` | Per output second, 480P / 720P / 1080P: Beijing ¥0.30 / ¥0.60 / ¥1.20; Singapore ¥0.375 / ¥0.749 / ¥1.499 (~$0.052 / $0.104 / $0.208) |
+| `wan3.0-video-prime` | Per output second, 480P / 720P / 1080P: Beijing ¥0.45 / ¥0.90 / ¥1.80; Singapore $0.068 / $0.14 / $0.28 |
 | `qwen3-tts-flash` | ~$0.000015 per character |
 | `qwen3-asr-flash-filetrans` | Per-minute billing (check console) |
 
@@ -1568,6 +1577,7 @@ These tools require only FFmpeg or Python packages — no GPU, no API key.
 | **Atlas Cloud** | `ATLASCLOUD_API_KEY` | `atlas_image`, `atlas_video` | Pay-as-you-go |
 | **Kling Official** | `KLING_API_KEY` | `kling_official_video`, `kling_official_image`, `kling_tts`, `kling_avatar`, `kling_lip_sync` | Pay-as-you-go |
 | **Volcengine Ark** | `ARK_API_KEY` | `seedance_ark` | Pay-as-you-go |
+| **Alibaba DashScope** | `DASHSCOPE_API_KEY` | `dashscope_image`, `dashscope_video`, `dashscope_tts`, `dashscope_asr` | Pay-as-you-go |
 | **MiniMax direct** | `MINIMAX_API_KEY` | `minimax_image`, `minimax_video` | Pay-as-you-go |
 | **Pika** | `PIKA_API_KEY` | `pika_video` | Prepaid, per output second ($0.01–0.08/s) |
 | **OpenAI** | `OPENAI_API_KEY` | `openai_tts`, `openai_image` | Paid only |

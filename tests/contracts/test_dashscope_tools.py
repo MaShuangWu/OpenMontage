@@ -23,29 +23,33 @@ from tools.base_tool import (
 from tools.graphics.dashscope_image import DashscopeImage
 from tools.audio.dashscope_tts import DashscopeTTS
 from tools.analysis.dashscope_asr import DashscopeAsr
+from tools.video.dashscope_video import DashscopeVideo
 
-TOOLS = [DashscopeImage, DashscopeTTS, DashscopeAsr]
+TOOLS = [DashscopeImage, DashscopeTTS, DashscopeAsr, DashscopeVideo]
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 
 EXPECTED_TIER = {
     DashscopeImage: ToolTier.GENERATE,
     DashscopeTTS: ToolTier.VOICE,
     DashscopeAsr: ToolTier.ANALYZE,
+    DashscopeVideo: ToolTier.GENERATE,
 }
 EXPECTED_CAPABILITY = {
     DashscopeImage: "image_generation",
     DashscopeTTS: "tts",
     DashscopeAsr: "analysis",
+    DashscopeVideo: "video_generation",
 }
 EXPECTED_EXECUTION_MODE = {
     DashscopeImage: ExecutionMode.SYNC,
     DashscopeTTS: ExecutionMode.SYNC,
     DashscopeAsr: ExecutionMode.ASYNC,
+    DashscopeVideo: ExecutionMode.SYNC,
 }
 
 
 # ------------------------------------------------------------------
-# Contract compliance (parametrized over all 3 tools)
+# Contract compliance (parametrized over all 4 tools)
 # ------------------------------------------------------------------
 
 @pytest.mark.parametrize("cls", TOOLS, ids=lambda c: c.name)
@@ -69,11 +73,11 @@ class TestContract:
         schema = tool.input_schema
         assert schema.get("type") == "object"
         props = schema.get("properties", {})
-        required = schema.get("required", [])
-        # Each tool has at least one required field
-        assert len(required) >= 1
-        for field in required:
-            assert field in props
+        alternatives = schema.get("anyOf", [schema])
+        for alternative in alternatives:
+            required = alternative.get("required", [])
+            assert required
+            assert set(required) <= props.keys()
 
     def test_has_capabilities(self, cls):
         tool = cls()
@@ -119,8 +123,10 @@ class TestContract:
         tool = cls()
         assert tool.get_status() == ToolStatus.UNAVAILABLE
 
-    def test_status_available_with_key(self, cls, monkeypatch):
+    def test_status_available_with_configuration(self, cls, monkeypatch):
         monkeypatch.setenv("DASHSCOPE_API_KEY", "fake-key-for-testing")
+        monkeypatch.setenv("DASHSCOPE_WORKSPACE_ID", "ws-example")
+        monkeypatch.setenv("DASHSCOPE_REGION", "cn-beijing")
         tool = cls()
         assert tool.get_status() == ToolStatus.AVAILABLE
 
@@ -168,6 +174,8 @@ class TestContract:
         # Use tool-specific minimal inputs
         if cls is DashscopeImage:
             cost = tool.estimate_cost({"prompt": "test", "n": 1})
+        elif cls is DashscopeVideo:
+            cost = tool.estimate_cost({"prompt": "test"})
         elif cls is DashscopeTTS:
             cost = tool.estimate_cost({"text": "test"})
         else:
@@ -177,7 +185,7 @@ class TestContract:
 
     def test_dry_run_returns_dict(self, cls):
         tool = cls()
-        if cls is DashscopeImage:
+        if cls is DashscopeImage or cls is DashscopeVideo:
             result = tool.dry_run({"prompt": "test"})
         elif cls is DashscopeTTS:
             result = tool.dry_run({"text": "test"})
@@ -682,7 +690,7 @@ class TestDashscopeAsrSpecific:
 
 class TestDashscopeRegistryDiscovery:
 
-    def test_all_three_tools_discoverable(self):
+    def test_all_tools_discoverable(self):
         from tools.tool_registry import ToolRegistry
         registry = ToolRegistry()
         registry.discover()
@@ -691,7 +699,12 @@ class TestDashscopeRegistryDiscovery:
             if t.provider == "dashscope"
         ]
         names = {t.name for t in dashscope_tools}
-        assert names == {"dashscope_image", "dashscope_tts", "dashscope_asr"}
+        assert names == {
+            "dashscope_image",
+            "dashscope_tts",
+            "dashscope_asr",
+            "dashscope_video",
+        }
 
     def test_image_selector_finds_dashscope(self):
         """image_selector should auto-discover dashscope_image by capability."""
