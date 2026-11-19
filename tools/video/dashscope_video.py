@@ -13,8 +13,10 @@ https://help.aliyun.com/zh/model-studio/wan3-video-generation-api-reference
 from __future__ import annotations
 
 import base64
+import math
 import mimetypes
 import os
+import re
 import time
 from pathlib import Path
 from typing import Any
@@ -24,6 +26,7 @@ from tools.base_tool import (
     Determinism,
     ExecutionMode,
     ResourceProfile,
+    ResumeSupport,
     RetryPolicy,
     ToolResult,
     ToolRuntime,
@@ -32,8 +35,14 @@ from tools.base_tool import (
     ToolTier,
 )
 
-CN_BASE_URL = "https://dashscope.aliyuncs.com"
-INTL_BASE_URL = "https://dashscope-intl.aliyuncs.com"
+REGIONS = {
+    "cn-beijing",
+    "ap-southeast-1",
+    "ap-northeast-1",
+    "cn-hongkong",
+    "eu-central-1",
+    "us-east-1",
+}
 SUBMIT_PATH = "/api/v1/services/aigc/video-generation/video-synthesis"
 TASK_PATH = "/api/v1/tasks/{task_id}"
 
@@ -83,13 +92,14 @@ class DashscopeVideo(BaseTool):
     execution_mode = ExecutionMode.SYNC
     determinism = Determinism.STOCHASTIC
     runtime = ToolRuntime.API
+    resume_support = ResumeSupport.FROM_CHECKPOINT
 
     dependencies = ["env:DASHSCOPE_API_KEY"]
     install_instructions = (
         "Set DASHSCOPE_API_KEY to your Alibaba Cloud DashScope API key.\n"
         "  Get one at https://dashscope.aliyun.com/\n"
-        "  International-site keys: also set DASHSCOPE_REGION=intl, or set "
-        "DASHSCOPE_BASE_URL to override the endpoint entirely."
+        "  Set DASHSCOPE_WORKSPACE_ID and DASHSCOPE_REGION for Wan 3.0 "
+        "(region defaults to cn-beijing), or set DASHSCOPE_BASE_URL to override the endpoint."
     )
     fallback = "minimax_video"
     fallback_tools = ["minimax_video", "seedance_video", "kling_video"]
@@ -118,15 +128,15 @@ class DashscopeVideo(BaseTool):
     # Selector note: ``image_url`` is read but intentionally not declared here.
     # The video selector uploads ``reference_image_path`` to fal.ai for any
     # provider that declares ``image_url``; this tool inlines local files as
-    # base64 instead, so it works with only DASHSCOPE_API_KEY configured.
+    # base64 instead, so no separate upload host is needed.
     input_schema = {
         "type": "object",
-        "required": ["prompt"],
+        "anyOf": [{"required": ["prompt"]}, {"required": ["resume_job"]}],
         "properties": {
             "prompt": {"type": "string", "maxLength": 20000},
             "operation": {
                 "type": "string",
-                "enum": OPERATIONS,
+                "enum": [*OPERATIONS, "resume"],
                 "default": "text_to_video",
             },
             "model": {
@@ -251,17 +261,24 @@ class DashscopeVideo(BaseTool):
                 ),
             },
             "output_path": {"type": "string"},
+            "resume_job": {
+                "type": "object",
+                "description": "Job metadata from a prior submission. Poll and download without submitting.",
+            },
+            "job_path": {
+                "type": "string",
+                "description": "Optional path to save accepted job metadata before polling.",
+            },
         },
     }
 
     resource_profile = ResourceProfile(
         cpu_cores=1, ram_mb=512, vram_mb=0, disk_mb=500, network_required=True
     )
-    retry_policy = RetryPolicy(
-        max_retries=2, retryable_errors=["rate_limit", "timeout"]
-    )
+    retry_policy = RetryPolicy(max_retries=0)
     idempotency_key_fields = [
         "prompt",
+        "resume_job",
         "model",
         "operation",
         "reference_image_url",
@@ -295,19 +312,28 @@ class DashscopeVideo(BaseTool):
     ]
 
     def get_status(self) -> ToolStatus:
-        if os.environ.get("DASHSCOPE_API_KEY"):
-            return ToolStatus.AVAILABLE
-        return ToolStatus.UNAVAILABLE
+        if not os.environ.get("DASHSCOPE_API_KEY"):
+            return ToolStatus.UNAVAILABLE
+        try:
+            self._base_url()
+        except ValueError:
+            return ToolStatus.UNAVAILABLE
+        return ToolStatus.AVAILABLE
 
     @staticmethod
     def _base_url() -> str:
         override = os.environ.get("DASHSCOPE_BASE_URL", "").strip()
         if override:
             return override.rstrip("/")
-        region = os.environ.get("DASHSCOPE_REGION", "").strip().lower()
+        workspace = os.environ.get("DASHSCOPE_WORKSPACE_ID", "").strip()
+        if not re.fullmatch(r"[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?", workspace):
+            raise ValueError("Set DASHSCOPE_WORKSPACE_ID to a valid DashScope workspace ID.")
+        region = os.environ.get("DASHSCOPE_REGION", "").strip().lower() or "cn-beijing"
         if region in ("intl", "international", "singapore"):
-            return INTL_BASE_URL
-        return CN_BASE_URL
+            region = "ap-southeast-1"
+        if region not in REGIONS:
+            raise ValueError(f"Unsupported DASHSCOPE_REGION. Choose from {', '.join(sorted(REGIONS))}.")
+        return f"https://{workspace}.{region}.maas.aliyuncs.com"
 
     @staticmethod
     def _duration(inputs: dict[str, Any]) -> Any:
@@ -317,6 +343,8 @@ class DashscopeVideo(BaseTool):
         return duration
 
     def estimate_cost(self, inputs: dict[str, Any]) -> float:
+        if "resume_job" in inputs or inputs.get("operation") == "resume":
+            return 0.0  # No new generation charge.
         model = inputs.get("model", DEFAULT_MODEL)
         rates = USD_PER_SECOND.get(model, USD_PER_SECOND["wan3.0-video-prime"])
         resolution = inputs.get("resolution", DEFAULT_RESOLUTION)
@@ -480,119 +508,153 @@ class DashscopeVideo(BaseTool):
                 error="DASHSCOPE_API_KEY not set. " + self.install_instructions,
             )
 
-        payload, validation_error = self._build_payload(inputs)
-        if validation_error:
-            return ToolResult(success=False, error=validation_error)
-        assert payload is not None
-
         import requests
+        from tools.provider_jobs import save_job
 
-        start = time.time()
-        base_url = self._base_url()
-        model = payload["model"]
-        headers = {
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-        }
-        task_id: str | None = None
-        poll_interval = max(float(inputs.get("poll_interval_seconds", 15)), 0.1)
-        timeout_seconds = max(float(inputs.get("timeout_seconds", 1800)), 1.0)
-        poll_deadline = time.monotonic() + timeout_seconds
+        start = time.monotonic()
+        job: dict[str, Any] = {}
+        cost: float | None = None
+        data: dict[str, Any] = {"provider": self.provider}
+        submission_pending = False
 
-        def _redact(text: str) -> str:
-            return text.replace(api_key, "[redacted]")
+        def failure(error: str, **extra: Any) -> ToolResult:
+            return ToolResult(
+                success=False,
+                error=error.replace(api_key, "[redacted]"),
+                data={**data, **extra},
+                cost_usd=cost,
+                model=data.get("model"),
+            )
 
-        def _failure(error: str, **extra: Any) -> ToolResult:
-            data: dict[str, Any] = {"provider": "dashscope", "model": model}
-            if task_id:
-                data["task_id"] = task_id
-            data.update(extra)
-            return ToolResult(success=False, error=error, data=data, model=model)
+        def unknown_submission(error: str) -> ToolResult:
+            return failure(
+                f"{error} Task acceptance is unknown. Check DashScope for the original "
+                "task ID before submitting again.",
+                status="submission_unknown",
+            )
 
         try:
-            submit = requests.post(
-                f"{base_url}{SUBMIT_PATH}",
-                headers={**headers, "X-DashScope-Async": "enable"},
-                json=payload,
-                timeout=60,
-            )
-            api_error = self._api_error(submit)
-            if api_error:
-                return _failure(f"DashScope video submit failed: {api_error}")
-            task_id = (submit.json().get("output") or {}).get("task_id")
-            if not task_id:
-                return _failure("DashScope did not return a task_id.")
+            base_url = self._base_url()
+            poll_interval = max(float(inputs.get("poll_interval_seconds", 15)), 0.1)
+            timeout_seconds = max(float(inputs.get("timeout_seconds", 1800)), 1.0)
+            headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+            data["endpoint"] = base_url
 
-            output: dict[str, Any] = {}
-            usage: dict[str, Any] = {}
-            while True:
-                if time.monotonic() >= poll_deadline:
-                    return _failure(
-                        f"DashScope video generation timed out after {timeout_seconds:g}s; "
-                        f"the task may still complete. Query task_id '{task_id}' "
-                        "within 24 hours.",
-                        status="timed_out",
-                    )
-                time.sleep(min(poll_interval, max(poll_deadline - time.monotonic(), 0)))
-                status_resp = requests.get(
-                    f"{base_url}{TASK_PATH.format(task_id=task_id)}",
-                    headers=headers,
-                    timeout=30,
+            if "resume_job" in inputs or inputs.get("operation") == "resume":
+                candidate = inputs.get("resume_job")
+                if (
+                    not isinstance(candidate, dict)
+                    or candidate.get("tool") != self.name
+                    or candidate.get("endpoint") != base_url
+                    or candidate.get("model") not in MODELS
+                    or not isinstance(candidate.get("parameters"), dict)
+                    or candidate["parameters"].get("resolution") not in RESOLUTIONS
+                    or not isinstance(candidate.get("task_id"), str)
+                    or not re.fullmatch(r"[A-Za-z0-9_-]+", candidate["task_id"])
+                ):
+                    return failure("Resume requires a valid resume_job for the configured endpoint.")
+                job = candidate
+            else:
+                payload, validation_error = self._build_payload(inputs)
+                if validation_error:
+                    return failure(validation_error)
+                assert payload is not None
+                data.update(model=payload["model"], prompt=payload["input"]["prompt"])
+                submission_pending = True
+                submit = requests.post(
+                    f"{base_url}{SUBMIT_PATH}",
+                    headers={**headers, "X-DashScope-Async": "enable"},
+                    json=payload,
+                    timeout=60,
+                    allow_redirects=False,
                 )
-                api_error = self._api_error(status_resp)
-                if api_error:
-                    return _failure(f"DashScope task query failed: {api_error}")
+                if api_error := self._api_error(submit):
+                    if 400 <= submit.status_code < 500 and submit.status_code != 408:
+                        return failure(f"DashScope video submit failed: {api_error}")
+                    return unknown_submission(f"DashScope video submit failed: {api_error}.")
+                if not 200 <= submit.status_code < 300:
+                    return unknown_submission(f"Unexpected DashScope submit response: HTTP {submit.status_code}.")
+                task_id = (submit.json().get("output") or {}).get("task_id")
+                if not isinstance(task_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]+", task_id):
+                    return unknown_submission("DashScope did not return a valid task_id.")
+                job = {
+                    "tool": self.name,
+                    "task_id": task_id,
+                    "endpoint": base_url,
+                    "model": payload["model"],
+                    "operation": inputs.get("operation", "text_to_video"),
+                    "parameters": payload["parameters"],
+                }
+                submission_pending = False
+
+            task_id = job["task_id"]
+            parameters = job["parameters"]
+            data.update(
+                task_id=task_id,
+                resume_job=job,
+                model=job["model"],
+                operation=job.get("operation"),
+                parameters=parameters,
+                resolution=parameters["resolution"],
+                ratio=parameters.get("ratio"),
+                audio=parameters.get("audio"),
+            )
+            save_job(inputs.get("job_path"), job)
+            task_url = f"{base_url}{TASK_PATH.format(task_id=task_id)}"
+            deadline = time.monotonic() + timeout_seconds
+            while (remaining := deadline - time.monotonic()) > 0:
+                status_resp = requests.get(task_url, headers=headers, timeout=min(30, remaining))
+                if api_error := self._api_error(status_resp):
+                    return failure(f"DashScope task query failed: {api_error}")
                 body = status_resp.json()
                 output = body.get("output") or {}
-                usage = body.get("usage") or {}
                 status = output.get("task_status")
                 if status == _SUCCESS:
                     break
                 if status in _FAILURES:
                     reason = output.get("message") or output.get("code") or "unknown error"
-                    return _failure(
-                        f"DashScope video generation {status}: {reason}",
-                        status=status,
-                    )
+                    return failure(f"DashScope video generation {status}: {reason}", status=status)
                 if status not in _IN_PROGRESS:
-                    return _failure(f"DashScope returned unknown task status '{status}'.")
+                    return failure(f"DashScope returned unknown task status '{status}'.")
+                time.sleep(min(poll_interval, max(deadline - time.monotonic(), 0)))
+            else:
+                return failure(
+                    f"DashScope video generation timed out after {timeout_seconds:g}s. "
+                    "Resume with the returned resume_job within 24 hours.",
+                    status="timed_out",
+                )
+
+            usage = body.get("usage") or {}
+            data.update(usage=usage, actual_prompt=output.get("actual_prompt") or output.get("orig_prompt"))
+            if "prompt" not in data:
+                data["prompt"] = output.get("orig_prompt")
+            billed_seconds = usage.get("duration", usage.get("output_video_duration"))
+            if (
+                type(billed_seconds) in (int, float)
+                and math.isfinite(billed_seconds)
+                and billed_seconds > 0
+            ):
+                rate = USD_PER_SECOND[job["model"]][parameters["resolution"]]
+                cost = round(rate * billed_seconds, 2)
 
             video_url = output.get("video_url")
             if not video_url:
-                return _failure("DashScope task succeeded without a video_url.")
-
+                return failure("DashScope task succeeded without a video_url.")
             video = requests.get(video_url, timeout=300)
             video.raise_for_status()
             output_path = Path(inputs.get("output_path", "dashscope_video.mp4"))
             output_path.parent.mkdir(parents=True, exist_ok=True)
             output_path.write_bytes(video.content)
         except Exception as exc:  # noqa: BLE001 - surface a redacted error to the caller
-            return _failure(f"DashScope video generation failed: {_redact(str(exc))}")
-
-        # Bill on the duration DashScope actually produced (matters for duration=-1).
-        billed_seconds = usage.get("output_video_duration") or usage.get("duration")
-        cost_inputs = dict(inputs)
-        if billed_seconds:
-            cost_inputs["duration"] = max(1, round(float(billed_seconds)))
+            if submission_pending:
+                return unknown_submission(f"DashScope video submit failed: {exc}.")
+            return failure(f"DashScope video generation failed: {exc}")
 
         return ToolResult(
             success=True,
-            data={
-                "provider": "dashscope",
-                "model": model,
-                "operation": inputs.get("operation", "text_to_video"),
-                "task_id": task_id,
-                "endpoint": base_url,
-                "prompt": payload["input"]["prompt"],
-                "actual_prompt": output.get("actual_prompt") or output.get("orig_prompt"),
-                "resolution": payload["parameters"]["resolution"],
-                "ratio": payload["parameters"]["ratio"],
-                "audio": payload["parameters"]["audio"],
-                "usage": usage,
-                "output": str(output_path),
-            },
+            data={**data, "output": str(output_path)},
             artifacts=[str(output_path)],
-            cost_usd=self.estimate_cost(cost_inputs),
-            duration_seconds=round(time.time() - start, 2),
-            model=model,
+            cost_usd=cost,
+            duration_seconds=round(time.monotonic() - start, 2),
+            model=job["model"],
         )

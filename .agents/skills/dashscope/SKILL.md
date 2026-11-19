@@ -27,7 +27,7 @@ POST https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/g
 ### Video Generation (Wan 3.0)
 
 ```text
-POST https://dashscope.aliyuncs.com/api/v1/services/aigc/video-generation/video-synthesis
+POST https://<workspace-id>.<region>.maas.aliyuncs.com/api/v1/services/aigc/video-generation/video-synthesis
 Header: X-DashScope-Async: enable
 ```
 
@@ -36,7 +36,7 @@ Header: X-DashScope-Async: enable
 - `media[].type`: `first_frame`, `last_frame`, `reference_image` (≤10), `reference_video` (≤5, total ≤15s), `reference_audio` (≤5, total ≤15s). Frame types and `reference_*` types are mutually exclusive. `url` accepts public URLs or `data:{mime};base64,...`.
 - Returns `task_id` → poll `GET /api/v1/tasks/{task_id}` until `SUCCEEDED` → download `output.video_url` (valid 24h). Task IDs expire after 24h.
 - Billing is per output second by resolution. **The API defaults to 1080P**; the tool defaults to 720P.
-- International-site keys need `DASHSCOPE_REGION=intl` (routes to `dashscope-intl.aliyuncs.com`) or `DASHSCOPE_BASE_URL`.
+- Set `DASHSCOPE_WORKSPACE_ID` and `DASHSCOPE_REGION` to match the key (region defaults to `cn-beijing`). `DASHSCOPE_BASE_URL` overrides both.
 
 ### Text-to-Speech
 
@@ -150,6 +150,8 @@ result = DashscopeAsr().execute({
 - `ratio` (alias `aspect_ratio`): default `"16:9"` for text-to-video, `"adaptive"` otherwise
 - `audio`: default `true`; `seed`; `prompt_extend`: default `true`; `watermark`: default `false`
 - `poll_interval_seconds`: default `15`; `timeout_seconds`: default `1800`
+- `job_path`: optional path to save the accepted task before polling.
+- `resume_job`: pass the returned job object or the saved JSON to resume with the same workspace endpoint. A resume only queries and downloads. After an ambiguous submit failure, reconcile the original task before attempting another submission.
 
 ### TTS (`dashscope_tts`)
 - `text` (required): text to synthesize (max 600 chars for qwen3-tts-flash)
@@ -174,7 +176,7 @@ result = DashscopeAsr().execute({
 - **ASR poll timeout:** Increase `timeout_seconds` (default 300). Long audio files take longer to transcribe.
 - **ASR no word timestamps:** Ensure `enable_words: true` and model is `qwen3-asr-flash-filetrans` (not the sync `qwen3-asr-flash`).
 - **Video "Model not exist":** The model name is wrong for the region. Mainland China uses `wan3.0-video` / `wan3.0-video-prime` (not `wan3.0-t2v`).
-- **Video 401 with an international key:** Set `DASHSCOPE_REGION=intl`.
+- **Video 401:** Check that the API key, workspace, and region all match.
 - **Video timed out:** The error includes `task_id`; query `GET /api/v1/tasks/{task_id}` within 24 hours to recover the clip.
 - **Auth error (401):** Verify `DASHSCOPE_API_KEY` is set. Use `Authorization: Bearer $KEY` header.
 

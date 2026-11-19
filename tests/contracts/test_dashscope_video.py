@@ -38,9 +38,14 @@ def _install_fake_requests(monkeypatch, post_responses, get_responses):
     calls = {"post": [], "get": []}
     fake = types.ModuleType("requests")
 
-    def fake_post(url, headers=None, json=None, timeout=None):
-        calls["post"].append({"url": url, "headers": headers, "json": json})
-        return post_responses.pop(0)
+    def fake_post(url, headers=None, json=None, timeout=None, allow_redirects=True):
+        calls["post"].append({
+            "url": url, "headers": headers, "json": json, "allow_redirects": allow_redirects,
+        })
+        response = post_responses.pop(0)
+        if isinstance(response, Exception):
+            raise response
+        return response
 
     def fake_get(url, headers=None, timeout=None):
         calls["get"].append({"url": url, "headers": headers})
@@ -55,6 +60,7 @@ def _install_fake_requests(monkeypatch, post_responses, get_responses):
 @pytest.fixture()
 def dashscope_env(monkeypatch):
     monkeypatch.setenv("DASHSCOPE_API_KEY", "sk-fake-test-key")
+    monkeypatch.setenv("DASHSCOPE_WORKSPACE_ID", "ws-example")
     monkeypatch.delenv("DASHSCOPE_REGION", raising=False)
     monkeypatch.delenv("DASHSCOPE_BASE_URL", raising=False)
     monkeypatch.setattr("tools.video.dashscope_video.time.sleep", lambda _s: None)
@@ -168,15 +174,28 @@ class TestPayload:
 class TestEndpoint:
 
     def test_defaults_to_mainland(self, dashscope_env):
-        assert DashscopeVideo._base_url() == "https://dashscope.aliyuncs.com"
+        assert DashscopeVideo._base_url() == "https://ws-example.cn-beijing.maas.aliyuncs.com"
 
     def test_intl_region(self, dashscope_env, monkeypatch):
         monkeypatch.setenv("DASHSCOPE_REGION", "intl")
-        assert DashscopeVideo._base_url() == "https://dashscope-intl.aliyuncs.com"
+        assert DashscopeVideo._base_url() == "https://ws-example.ap-southeast-1.maas.aliyuncs.com"
 
     def test_base_url_override(self, dashscope_env, monkeypatch):
+        monkeypatch.delenv("DASHSCOPE_WORKSPACE_ID")
         monkeypatch.setenv("DASHSCOPE_BASE_URL", "https://proxy.example.com/")
         assert DashscopeVideo._base_url() == "https://proxy.example.com"
+
+
+    @pytest.mark.parametrize("region", ["ap-northeast-1", "cn-hongkong", "eu-central-1", "us-east-1"])
+    def test_regional_workspaces(self, dashscope_env, monkeypatch, region):
+        monkeypatch.setenv("DASHSCOPE_REGION", region)
+        assert DashscopeVideo._base_url() == f"https://ws-example.{region}.maas.aliyuncs.com"
+
+    def test_missing_workspace(self, dashscope_env, monkeypatch):
+        monkeypatch.delenv("DASHSCOPE_WORKSPACE_ID")
+        assert DashscopeVideo().get_status().value == "unavailable"
+        with pytest.raises(ValueError, match="DASHSCOPE_WORKSPACE_ID"):
+            DashscopeVideo._base_url()
 
 
 class TestCost:
@@ -224,7 +243,9 @@ class TestExecute:
         assert out.read_bytes() == b"mp4-bytes"
         assert result.data["task_id"] == "task-1"
         assert result.cost_usd == 0.83  # 8s x $0.104 at 720P, not the 30s budget
+        assert len(calls["post"]) == 1
         submit = calls["post"][0]
+        assert submit["allow_redirects"] is False
         assert submit["url"].endswith("/api/v1/services/aigc/video-generation/video-synthesis")
         assert submit["headers"]["X-DashScope-Async"] == "enable"
         assert calls["get"][0]["url"].endswith("/api/v1/tasks/task-1")
@@ -256,13 +277,16 @@ class TestExecute:
         assert result.data["task_id"] == "task-1"
 
     def test_timeout_keeps_task_id(self, dashscope_env, tmp_path, monkeypatch):
-        _install_fake_requests(
+        calls = _install_fake_requests(
             monkeypatch,
             post_responses=[_submitted()],
             get_responses=[_status("RUNNING")] * 5,
         )
-        clock = iter([0.0, 0.0, 0.5, 2.0, 2.0, 2.0])
-        monkeypatch.setattr("tools.video.dashscope_video.time.monotonic", lambda: next(clock))
+        clock = iter([0.0, 0.0, 0.5, 0.6, 2.0])
+        monkeypatch.setattr(
+            "tools.video.dashscope_video.time",
+            types.SimpleNamespace(monotonic=lambda: next(clock), sleep=lambda _: None),
+        )
         result = DashscopeVideo().execute(
             {"prompt": "x", "timeout_seconds": 1, "output_path": str(tmp_path / "o.mp4")}
         )
@@ -270,6 +294,57 @@ class TestExecute:
         assert "timed out" in result.error
         assert result.data["status"] == "timed_out"
         assert result.data["task_id"] == "task-1"
+        assert result.data["resume_job"]["parameters"]["resolution"] == "720P"
+        assert result.cost_usd is None
+        assert len(calls["post"]) == 1
+
+    def test_lost_submit_response_is_not_retried(self, dashscope_env, monkeypatch):
+        calls = _install_fake_requests(monkeypatch, [TimeoutError("response lost")], [])
+        tool = DashscopeVideo()
+        result = tool.execute({"prompt": "x"})
+        assert not result.success
+        assert result.data["status"] == "submission_unknown"
+        assert "before submitting again" in result.error
+        assert "task_id" not in result.data
+        assert result.cost_usd is None
+        assert tool.retry_policy.max_retries == 0
+        assert len(calls["post"]) == 1
+        assert not calls["get"]
+
+    def test_download_failure_keeps_checkpoint_and_resume_only_queries(
+        self, dashscope_env, tmp_path, monkeypatch,
+    ):
+        done = _status("SUCCEEDED", video_url="https://cdn.example.com/v.mp4")
+        calls = _install_fake_requests(
+            monkeypatch, [_submitted()],
+            [done, FakeResponse(status_code=503), done, FakeResponse(content=b"mp4-bytes")],
+        )
+        tool = DashscopeVideo()
+        job_path = tmp_path / "wan.json"
+        output_path = tmp_path / "video.mp4"
+        failed = tool.execute({"prompt": "x", "job_path": str(job_path)})
+        assert not failed.success
+        assert failed.cost_usd is None
+        job = json.loads(job_path.read_text())
+        assert failed.data["resume_job"] == job
+        resume_inputs = {"resume_job": job, "output_path": str(output_path)}
+        assert tool.estimate_cost(resume_inputs) == 0.0
+        resumed = tool.execute(resume_inputs)
+        assert resumed.success, resumed.error
+        assert resumed.cost_usd is None
+        assert resumed.data["task_id"] == "task-1"
+        assert output_path.read_bytes() == b"mp4-bytes"
+        assert len(calls["post"]) == 1
+        assert calls["get"][0] == calls["get"][2]
+        assert calls["get"][3]["headers"] is None
+
+    def test_invalid_resume_never_submits(self, dashscope_env, monkeypatch):
+        calls = _install_fake_requests(monkeypatch, [], [])
+        for inputs in ({"operation": "resume"}, {"resume_job": {}, "prompt": "x"}):
+            result = DashscopeVideo().execute(inputs)
+            assert not result.success
+            assert "valid resume_job" in result.error
+        assert calls == {"post": [], "get": []}
 
     def test_missing_key(self, monkeypatch):
         monkeypatch.delenv("DASHSCOPE_API_KEY", raising=False)

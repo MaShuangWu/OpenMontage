@@ -73,11 +73,11 @@ class TestContract:
         schema = tool.input_schema
         assert schema.get("type") == "object"
         props = schema.get("properties", {})
-        required = schema.get("required", [])
-        # Each tool has at least one required field
-        assert len(required) >= 1
-        for field in required:
-            assert field in props
+        alternatives = schema.get("anyOf", [schema])
+        for alternative in alternatives:
+            required = alternative.get("required", [])
+            assert required
+            assert set(required) <= props.keys()
 
     def test_has_capabilities(self, cls):
         tool = cls()
@@ -123,8 +123,10 @@ class TestContract:
         tool = cls()
         assert tool.get_status() == ToolStatus.UNAVAILABLE
 
-    def test_status_available_with_key(self, cls, monkeypatch):
+    def test_status_available_with_configuration(self, cls, monkeypatch):
         monkeypatch.setenv("DASHSCOPE_API_KEY", "fake-key-for-testing")
+        monkeypatch.setenv("DASHSCOPE_WORKSPACE_ID", "ws-example")
+        monkeypatch.setenv("DASHSCOPE_REGION", "cn-beijing")
         tool = cls()
         assert tool.get_status() == ToolStatus.AVAILABLE
 
