@@ -13,7 +13,10 @@ import {
 } from "remotion";
 
 import { CinematicRendererProps, CinematicTone, CinematicVideoScene } from "./cinematic/types";
-import { resolveTrimAfterFrames } from "./cinematic/trim-after.js";
+import {
+  resolveSceneDurationFrames,
+  resolveTrimAfterFrames,
+} from "./cinematic/trim-after.js";
 import { CaptionOverlay } from "./components/CaptionOverlay";
 import { resolveAsset } from "./lib/resolveAsset";
 
@@ -38,7 +41,7 @@ const toneGradient = (tone: CinematicTone) => {
 const SceneVideo: React.FC<{ scene: CinematicVideoScene }> = ({ scene }) => {
   const frame = useCurrentFrame();
   const { fps } = useVideoConfig();
-  const durationInFrames = Math.max(1, Math.round(scene.durationSeconds * fps));
+  const durationInFrames = resolveSceneDurationFrames(scene, fps);
   const fadeInFrames = scene.fadeInFrames ?? 10;
   const fadeOutFrames = scene.fadeOutFrames ?? 10;
   const fadeOutStart = Math.max(0, durationInFrames - fadeOutFrames);
@@ -492,7 +495,11 @@ export const CinematicRenderer: React.FC<CinematicRendererProps> = ({
         <Sequence
           key={scene.id}
           from={Math.round(scene.startSeconds * FPS)}
-          durationInFrames={Math.round(scene.durationSeconds * FPS)}
+          durationInFrames={
+            scene.kind === "video"
+              ? resolveSceneDurationFrames(scene, FPS)
+              : Math.round(scene.durationSeconds * FPS)
+          }
         >
           {scene.kind === "video" ? (
             <SceneVideo scene={scene} />

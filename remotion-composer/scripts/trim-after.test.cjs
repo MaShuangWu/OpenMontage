@@ -1,7 +1,10 @@
 const assert = require("node:assert/strict");
 const test = require("node:test");
 
-const { resolveTrimAfterFrames } = require("../src/cinematic/trim-after.js");
+const {
+  resolveSceneDurationFrames,
+  resolveTrimAfterFrames,
+} = require("../src/cinematic/trim-after.js");
 
 test("playback-rate trim preserves the source-out without exposing later regions", () => {
   const fps = 30;
@@ -23,14 +26,20 @@ test("playback-rate trim preserves the source-out without exposing later regions
       playbackRate,
     };
     const trimAfter = resolveTrimAfterFrames(scene, fps);
+    const durationInFrames = resolveSceneDurationFrames(scene, fps);
     const visibleRegions = new Set();
 
-    for (let timelineFrame = 0; timelineFrame < trimAfter; timelineFrame += 1) {
+    for (
+      let timelineFrame = 0;
+      timelineFrame < durationInFrames;
+      timelineFrame += 1
+    ) {
       const sourceFrame = Math.floor(timelineFrame * playbackRate);
       visibleRegions.add(regions[sourceFrame]);
     }
 
     assert.equal(trimAfter, Math.round((2 * fps) / playbackRate));
+    assert.equal(durationInFrames, Math.round((2 * fps) / playbackRate));
     assert.ok(visibleRegions.has("green"));
     assert.ok(!visibleRegions.has("blue"));
   }
